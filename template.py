@@ -1,4 +1,4 @@
-from troposphere import Template, Parameter, Condition
+from troposphere import Template, Parameter, Condition, Output
 from troposphere.iam import Role
 from troposphere.iam import PolicyType as IAMPolicy
 from troposphere.events import Rule, Target
@@ -65,8 +65,7 @@ code = [
     '            s3 = boto3.resource("s3")',
     '            cw = boto3.client("cloudwatch")',
     '            response = cw.get_metric_widget_image(MetricWidget=os.environ["json"])',
-    '            object = s3.Object(os.environ["bucket"], "image.png")',
-    '            object.put(Body=response["MetricWidgetImage"])',
+    '            s3.Bucket(os.environ["bucket"]).put_object(Key="image.png", Body=response["MetricWidgetImage"], ACL="public-read")',
     '    except Exception as e:',
     '        print(str(e))',
     '    return'
@@ -173,7 +172,11 @@ t.add_resource(IAMPolicy(
         Statement=[
             Statement(
                 Effect=Allow, 
-                Action=[Action("s3", "PutObject")],
+                Action=[
+                    Action("s3", "PutObject"),
+                    Action("s3", "PutObjectAcl"),
+                    Action("s3", "GetObjectAcl")
+                    ],
                 Resource=[Join("", ["arn:aws:s3:::", Ref(bucket), "/*"])]
                 ),
             Statement(
@@ -184,8 +187,6 @@ t.add_resource(IAMPolicy(
         ]
     )
 ))
-
-
 
 true_filter = t.add_resource(MetricFilter(
     "MetricFilterTrue",
@@ -217,7 +218,12 @@ false_filter = t.add_resource(MetricFilter(
     ]
 ))
 
-
+t.add_output(Output(
+    "ImageLink",
+    Condition=metric_filter,
+    Value=Join("", ["https://s3.amazonaws.com/", Ref(bucket), "/image.png"]),
+    Description="Link to download metric image."
+))
 
 yaml = (t.to_yaml())
 print(yaml)
