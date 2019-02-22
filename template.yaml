@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Conditions:
+  MakeMetric: !Not
+    - !Equals
+      - !Ref 'CloudwatchMetricName'
+      - ''
+Description: Monitors a key in an api call for a value and prints to cloudwatch logs
+Parameters:
+  CloudwatchMetricName:
+    Default: ''
+    Description: Fill this out if you want a true/false binary metric transformation
+      to be created on your logs
+    Type: String
+  key:
+    Default: open
+    Description: Key youd like to get a value for.
+    Type: String
+  url:
+    Default: https://members.heatsynclabs.org/space_api.json
+    Description: Url for the api you are checking
+    Type: String
+Resources:
+  Function:
+    DependsOn: LogGroup
+    Properties:
+      Code:
+        ZipFile: !Join
+          - "\n"
+          - - import boto3, os
+            - from botocore.vendored import requests
+            - ''
+            - 'def handler(event, context):'
+            - '    try:'
+            - '        r = requests.get(event["url"])'
+            - '        print(r.json()[event["key"]])'
+            - '        if "bucket" in os.environ:'
+            - '            s3 = boto3.resource("s3")'
+            - '            cw = boto3.client("cloudwatch")'
+            - '            response = cw.get_metric_widget_image(MetricWidget=os.environ["json"])'
+            - '            object = s3.Object(os.environ["bucket"], "image.png")'
+            - '            object.put(Body=response["MetricWidgetImage"])'
+            - '    except Exception as e:'
+            - '        print(str(e))'
+            - '    return'
+      Environment:
+        Variables: !If
+          - MakeMetric
+          - bucket: !Ref 'S3Bucket'
+            json: '{"width": 600, "height": 395, "metrics": [["HeatSyncDoors", "open",
+              {"stat": "Average"}]], "period": 300, "title": "HeatSyncDoors", "timezone":
+              "+0000"}'
+          - !Ref 'AWS::NoValue'
+      FunctionName: !Ref 'AWS::StackName'
+      Handler: index.handler
+      Role: !GetAtt 'LambdaExecutionRole.Arn'
+      Runtime: python3.7
+      Timeout: '10'
+    Type: AWS::Lambda::Function
+  LambdaExecutionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Type: AWS::IAM::Role
+  LogGroup:
+    Properties:
+      LogGroupName: !Join
+        - ''
+        - - /aws/lambda/
+          - !Ref 'AWS::StackName'
+    Type: AWS::Logs::LogGroup
+  MetricFilterFalse:
+    Condition: MakeMetric
+    DependsOn: LogGroup
+    Properties:
+      FilterPattern: ?False ?false ?FALSE
+      LogGroupName: !Join
+        - ''
+        - - /aws/lambda/
+          - !Ref 'AWS::StackName'
+      MetricTransformations:
+        - MetricName: !Ref 'key'
+          MetricNamespace: !Ref 'CloudwatchMetricName'
+          MetricValue: '0'
+    Type: AWS::Logs::MetricFilter
+  MetricFilterTrue:
+    Condition: MakeMetric
+    DependsOn: LogGroup
+    Properties:
+      FilterPattern: ?True ?true ?TRUE
+      LogGroupName: !Join
+        - ''
+        - - /aws/lambda/
+          - !Ref 'Function'
+      MetricTransformations:
+        - MetricName: !Ref 'key'
+          MetricNamespace: !Ref 'CloudwatchMetricName'
+          MetricValue: '1'
+    Type: AWS::Logs::MetricFilter
+  Permission:
+    Properties:
+      Action: lambda:invokeFunction
+      FunctionName: !Ref 'Function'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'Rule.Arn'
+    Type: AWS::Lambda::Permission
+  Policy:
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:PutObject
+            Effect: Allow
+            Resource:
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref 'S3Bucket'
+                  - /*
+          - Action:
+              - cloudwatch:GetMetricWidgetImage
+            Effect: Allow
+            Resource:
+              - '*'
+      PolicyName: CheckAPI
+      Roles:
+        - !Ref 'LambdaExecutionRole'
+    Type: AWS::IAM::Policy
+  Rule:
+    Properties:
+      Description: Checks api key value once per minute
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt 'Function.Arn'
+          Id: WebsiteCheck
+          Input: !Join
+            - ''
+            - - '{'
+              - '"url": "'
+              - !Ref 'url'
+              - '","key": "'
+              - !Ref 'key'
+              - '"}'
+    Type: AWS::Events::Rule
+  S3Bucket:
+    Condition: MakeMetric
+    Properties:
+      AccessControl: PublicRead
+    Type: AWS::S3::Bucket
