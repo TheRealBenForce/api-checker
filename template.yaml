@@ -5,15 +5,6 @@ Conditions:
       - !Ref 'CloudwatchMetricName'
       - ''
 Description: Monitors a key in an api call for a value and prints to cloudwatch logs
-Outputs:
-  ImageLink:
-    Condition: MakeMetric
-    Description: Link to download metric image.
-    Value: !Join
-      - ''
-      - - https://s3.amazonaws.com/
-        - !Ref 'S3Bucket'
-        - /image.png
 Parameters:
   CloudwatchMetricName:
     Default: ''
@@ -35,29 +26,28 @@ Resources:
       Code:
         ZipFile: !Join
           - "\n"
-          - - import boto3, os
+          - - import boto3, os, json
             - from botocore.vendored import requests
             - ''
             - 'def handler(event, context):'
             - '    try:'
             - '        r = requests.get(event["url"])'
             - '        print(r.json()[event["key"]])'
-            - '        if "bucket" in os.environ:'
-            - '            s3 = boto3.resource("s3")'
+            - '        if "namespace" in os.environ:'
             - '            cw = boto3.client("cloudwatch")'
-            - '            response = cw.get_metric_widget_image(MetricWidget=os.environ["json"])'
-            - '            s3.Bucket(os.environ["bucket"]).put_object(Key="image.png",
-              Body=response["MetricWidgetImage"], ACL="public-read")'
+            - '            j = json.loads(os.environ["json"])'
+            - '            j["metrics"][0].insert(0, os.environ["metric_name"])'
+            - '            j["metrics"][0].insert(0, os.environ["namespace"])'
+            - '            j["title"] = os.environ["namespace"]'
+            - '            response = cw.get_metric_widget_image(MetricWidget=json.dumps(j))'
             - '    except Exception as e:'
             - '        print(str(e))'
             - '    return'
       Environment:
         Variables: !If
           - MakeMetric
-          - bucket: !Ref 'S3Bucket'
-            json: '{"width": 600, "height": 395, "metrics": [["HeatSyncDoors", "open",
-              {"stat": "Average"}]], "period": 300, "title": "HeatSyncDoors", "timezone":
-              "+0000"}'
+          - metric_name: !Ref 'key'
+            namespace: !Ref 'CloudwatchMetricName'
           - !Ref 'AWS::NoValue'
       FunctionName: !Ref 'AWS::StackName'
       Handler: index.handler
@@ -120,30 +110,6 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt 'Rule.Arn'
     Type: AWS::Lambda::Permission
-  Policy:
-    Properties:
-      PolicyDocument:
-        Statement:
-          - Action:
-              - s3:PutObject
-              - s3:PutObjectAcl
-              - s3:GetObjectAcl
-            Effect: Allow
-            Resource:
-              - !Join
-                - ''
-                - - 'arn:aws:s3:::'
-                  - !Ref 'S3Bucket'
-                  - /*
-          - Action:
-              - cloudwatch:GetMetricWidgetImage
-            Effect: Allow
-            Resource:
-              - '*'
-      PolicyName: CheckAPI
-      Roles:
-        - !Ref 'LambdaExecutionRole'
-    Type: AWS::IAM::Policy
   Rule:
     Properties:
       Description: Checks api key value once per minute
@@ -161,8 +127,3 @@ Resources:
               - !Ref 'key'
               - '"}'
     Type: AWS::Events::Rule
-  S3Bucket:
-    Condition: MakeMetric
-    Properties:
-      AccessControl: PublicRead
-    Type: AWS::S3::Bucket

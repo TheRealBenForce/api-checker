@@ -1,1 +1,0 @@
-create-stack --stack-name check-heatsync --template-body file://template.yaml --capabilities CAPABILITY_IAM

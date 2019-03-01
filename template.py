@@ -1,10 +1,9 @@
-from troposphere import Template, Parameter, Condition, Output
+from troposphere import Template, Parameter, Condition
 from troposphere.iam import Role
 from troposphere.iam import PolicyType as IAMPolicy
 from troposphere.events import Rule, Target
 from troposphere.awslambda import Function, Code, Permission, Environment
 from troposphere.logs import MetricFilter, MetricTransformation, LogGroup
-from troposphere.s3 import Bucket, PublicRead
 from troposphere import GetAtt, Join, Ref, Equals, Not, If
 
 from awacs.aws import Action, Allow, Statement, Principal, Policy
@@ -41,6 +40,7 @@ cloudwatch_metric = t.add_parameter(Parameter(
     Default=""
     ))
 
+
 # Conditions
 
 metric_filter = t.add_condition(
@@ -50,50 +50,35 @@ metric_filter = t.add_condition(
         ""
         ))
     )
-
+    
+    
 # Resources
-
 code = [
-    'import boto3, os',
+    'import boto3, os, json',
     'from botocore.vendored import requests',
     '',
     'def handler(event, context):',
     '    try:',
     '        r = requests.get(event["url"])',
     '        print(r.json()[event["key"]])',
-    '        if "bucket" in os.environ:',
-    '            s3 = boto3.resource("s3")',
+    '        if "namespace" in os.environ:',
     '            cw = boto3.client("cloudwatch")',
-    '            response = cw.get_metric_widget_image(MetricWidget=os.environ["json"])',
-    '            s3.Bucket(os.environ["bucket"]).put_object(Key="image.png", Body=response["MetricWidgetImage"], ACL="public-read")',
+    '            j = json.loads(os.environ["json"])',
+    '            j["metrics"][0].insert(0, os.environ["metric_name"])',
+    '            j["metrics"][0].insert(0, os.environ["namespace"])',
+    '            j["title"] = os.environ["namespace"]',
+    '            response = cw.get_metric_widget_image(MetricWidget=json.dumps(j))',
     '    except Exception as e:',
     '        print(str(e))',
     '    return'
     ]
 
-metric_image_json = {
-    "width": 600,
-    "height": 395,
-    "metrics": [
-        [ "HeatSyncDoors", "open", { "stat": "Average" } ]
-    ],
-    "period": 300,\
-    "title": "HeatSyncDoors",
-    "timezone": "+0000"
-}
-        
-
 
 log_group = t.add_resource(LogGroup(
     "LogGroup",
     LogGroupName=Join("", ["/aws/lambda/", Ref("AWS::StackName")])
-    ))
-    
-bucket = t.add_resource(Bucket(
-    "S3Bucket",
-    Condition=metric_filter,
-    AccessControl=PublicRead
-    ))
+))
+
 
 function = t.add_resource(Function(
     "Function",
@@ -109,9 +94,8 @@ function = t.add_resource(Function(
     Environment=Environment(Variables=
         If(metric_filter, 
             {
-                "bucket": Ref(bucket),
-                "json" : json.dumps(metric_image_json)
-                
+                "namespace" : Ref(cloudwatch_metric),
+                "metric_name" : Ref(key)
             },
             Ref("AWS::NoValue")
         )
@@ -164,29 +148,7 @@ lambda_role = t.add_resource(Role(
     ManagedPolicyArns = ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"]
 ))
 
-t.add_resource(IAMPolicy(
-    "Policy",
-    PolicyName="CheckAPI",
-    Roles=[Ref(lambda_role)],
-    PolicyDocument=Policy(
-        Statement=[
-            Statement(
-                Effect=Allow, 
-                Action=[
-                    Action("s3", "PutObject"),
-                    Action("s3", "PutObjectAcl"),
-                    Action("s3", "GetObjectAcl")
-                    ],
-                Resource=[Join("", ["arn:aws:s3:::", Ref(bucket), "/*"])]
-                ),
-            Statement(
-                Effect=Allow, 
-                Action=[Action("cloudwatch", "GetMetricWidgetImage")],
-                Resource=["*"]
-                )
-        ]
-    )
-))
+
 
 true_filter = t.add_resource(MetricFilter(
     "MetricFilterTrue",
@@ -216,13 +178,6 @@ false_filter = t.add_resource(MetricFilter(
             MetricValue= "0"
         )
     ]
-))
-
-t.add_output(Output(
-    "ImageLink",
-    Condition=metric_filter,
-    Value=Join("", ["https://s3.amazonaws.com/", Ref(bucket), "/image.png"]),
-    Description="Link to download metric image."
 ))
 
 yaml = (t.to_yaml())
